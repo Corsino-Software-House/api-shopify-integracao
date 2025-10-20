@@ -37,4 +37,19 @@ export class ShopifyService {
       throw error;
     }
   }
+
+  async orderExists(orderId: string): Promise<boolean> {
+    try {
+      const url = `${this.baseUrl}/orders.json?status=any&tag=KK-${orderId}`;
+      const response = await axios.get(url, {
+        headers: {
+          'X-Shopify-Access-Token': this.token,
+        },
+      });
+      return response.data.orders && response.data.orders.length > 0;
+    } catch (error) {
+      this.logger.error(`Erro ao verificar pedido ${orderId}: ${error.message}`);
+      return false;
+    }
+  }
 }
