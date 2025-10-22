@@ -1,5 +1,5 @@
-import { Controller, Get, HttpStatus, HttpException } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { Controller, Get, Param, HttpStatus, HttpException } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
 import { SyncService } from './sync.service';
 
 @ApiTags('Sincronização')
@@ -59,5 +59,29 @@ export class SyncController {
       );
 
     return { message: result.message, duplicatedOrders: result.duplicatedOrders };
+  }
+
+  /**
+   * 🚚 Sincroniza expedição de pedido da Shopify para a KuantoKusta
+   */
+  @Get('shipment/:orderId')
+  @ApiOperation({ summary: 'Sincroniza expedição (fulfillment) da Shopify com a KuantoKusta' })
+  @ApiParam({ name: 'orderId', description: 'ID do pedido na Shopify', example: 1234567890 })
+  @ApiResponse({ status: 200, description: 'Expedição sincronizada com sucesso.' })
+  @ApiResponse({ status: 204, description: 'Nenhuma expedição encontrada para o pedido informado.' })
+  @ApiResponse({ status: 500, description: 'Erro ao sincronizar expedição.' })
+  async syncShipment(@Param('orderId') orderId: number) {
+    const result = await this.syncService.syncShipmentFromShopify(orderId);
+
+    if (result.statusCode === HttpStatus.NO_CONTENT)
+      return { message: result.message };
+
+    if (result.statusCode === HttpStatus.INTERNAL_SERVER_ERROR)
+      throw new HttpException(
+        { message: result.message },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+
+    return result;
   }
 }

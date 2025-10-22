@@ -1,6 +1,7 @@
-import { Injectable, Logger, HttpStatus } from '@nestjs/common';
+import { Injectable, Logger, HttpStatus,HttpException } from '@nestjs/common';
 import { KuantokustaService } from '../kuantokusta/kuantokusta.service';
 import { ShopifyService } from '../shopify/shopify.service';
+import axios from 'axios';
 
 @Injectable()
 export class SyncService {
@@ -122,5 +123,62 @@ export class SyncService {
         : [],
       tags: ['KuantoKusta', `KK-${order.orderId}`],
     };
+  }
+
+   async syncShipmentFromShopify(orderId: number) {
+    try {
+      this.logger.log(`🔄 Iniciando sincronização de expedição para o pedido ${orderId}...`);
+
+      // 1️⃣ Busca fulfillment na Shopify
+      const fulfillmentUrl = `${process.env.SHOPIFY_API_URL}/orders/${orderId}/fulfillments.json`;
+      const response = await axios.get(fulfillmentUrl, {
+        headers: {
+          'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN!,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const fulfillments = response.data?.fulfillments || [];
+      if (fulfillments.length === 0) {
+        this.logger.warn(`Nenhuma expedição encontrada para o pedido ${orderId}`);
+        return {
+          statusCode: HttpStatus.NO_CONTENT,
+          message: `Nenhuma expedição encontrada para o pedido ${orderId}`,
+        };
+      }
+
+      const fulfillment = fulfillments[0];
+      const shipmentPayload = {
+        trackingNumber: fulfillment.tracking_number,
+        trackingUrl: fulfillment.tracking_url,
+        carrier: fulfillment.tracking_company || 'Desconhecido',
+        status: fulfillment.status || 'shipped',
+      };
+
+      // 2️⃣ Envia expedição para KuantoKusta
+      const kuantoResponse = await this.kkService.updateShipment(`KK-${orderId}`, shipmentPayload);
+
+      this.logger.log(`✅ Expedição sincronizada com sucesso para pedido ${orderId}`);
+
+      return {
+        statusCode: HttpStatus.OK,
+        message: 'Expedição sincronizada com sucesso',
+        orderId,
+        shipmentPayload,
+        kuantoResponse,
+      };
+    } catch (error: any) {
+      const details = error.response?.data || error.message;
+      this.logger.error(`Erro ao sincronizar expedição do pedido ${orderId}`, details);
+
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+          message: `Erro ao sincronizar expedição do pedido ${orderId}`,
+          details,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }
