@@ -17,7 +17,7 @@ export class SyncService {
    */
   async syncOrders() {
     const orders = await this.kkService.getOrders();
-    return this.processOrders(orders, 'últimos 7 dias');
+    return this.processOrders(orders, 'Dia atual');
   }
 
   async syncWeeklyOrders() {
