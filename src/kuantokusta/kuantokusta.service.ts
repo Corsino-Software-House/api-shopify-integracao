@@ -71,18 +71,24 @@ export class KuantokustaService {
   /**
    * Busca pedidos dos últimos 7 dias
    */
-  async getOrders() {
-    try {
-      const today = new Date();
-      const sevenDaysAgo = new Date(today);
-      sevenDaysAgo.setDate(today.getDate() - 7);
-      sevenDaysAgo.setHours(0, 0, 0, 0);
+  /**
+ * Busca pedidos do dia atual
+ */
+async getOrders() {
+  try {
+    const today = new Date();
+    const startOfDay = new Date(today);
+    startOfDay.setHours(0, 0, 0, 0);
 
-      return await this.fetchOrdersBetween(sevenDaysAgo, today, 'últimos 7 dias');
-    } catch (error) {
-      throw error;
-    }
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    return await this.fetchOrdersBetween(startOfDay, endOfDay, 'dia atual');
+  } catch (error) {
+    throw error;
   }
+}
+
 
   /**
    * Busca pedidos da semana atual (segunda até hoje)
@@ -116,7 +122,7 @@ export class KuantokustaService {
       throw error;
     }
   }
-
+ 
   /**
    * Atualiza expedição de um pedido
    */
