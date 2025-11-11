@@ -1,4 +1,5 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { KuantoKustaOrder } from '../interface/KuantoKusta-interface';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
@@ -74,7 +75,7 @@ export class KuantokustaService {
   /**
  * Busca pedidos do dia atual
  */
-async getOrders() {
+async getOrders() : Promise<KuantoKustaOrder[]> {
   try {
     const today = new Date();
     const startOfDay = new Date(today);
