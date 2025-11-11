@@ -1,11 +1,16 @@
 import { Injectable, Logger, HttpStatus,HttpException } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { KuantokustaService } from '../kuantokusta/kuantokusta.service';
 import { ShopifyService } from '../shopify/shopify.service';
+import {ShopifyOrder} from '../interface/ShopifyOrder-interface';
+import { KuantoKustaOrder } from '../interface/KuantoKusta-interface';
 import axios from 'axios';
 
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
+   private isSyncRunning = false;
+   private isOrderStateUpdateRunning = false;
 
   constructor(
     private readonly kkService: KuantokustaService,
@@ -15,6 +20,51 @@ export class SyncService {
   /**
    * 🔄 Sincroniza pedidos dos últimos 7 dias
    */
+   @Cron(CronExpression.EVERY_MINUTE)
+async handleCronSync() {
+  if (this.isSyncRunning) {
+    this.logger.warn('⚠️ Sincronização já em execução. Ignorando nova chamada.');
+    return;
+  }
+
+  this.isSyncRunning = true;
+  this.logger.log('⏰ Iniciando sincronização automática de pedidos...');
+
+  try {
+    const result = await this.syncOrders();
+    this.logger.log(`✅ Sincronização concluída: ${result.message}`);
+  } catch (err) {
+    this.logger.error('❌ Erro durante sincronização automática', err);
+  } finally {
+    this.isSyncRunning = false;
+  }
+}
+
+@Cron(CronExpression.EVERY_MINUTE)
+async handleOrderStateUpdate() {
+  if (this.isOrderStateUpdateRunning) {
+    this.logger.warn('⚠️ Atualização de status já em execução. Ignorando.');
+    return;
+  }
+
+  this.isOrderStateUpdateRunning = true;
+  this.logger.log('🔁 Atualizando status dos pedidos existentes...');
+
+  try {
+    const orders = await this.kkService.getOrders();
+    for (const order of orders) {
+      if (!order.orderId || !order.orderState) continue;
+      await this.shopifyService.updateOrderStatusFromKuantoKusta(order.orderId, order.orderState);
+    }
+    this.logger.log('✅ Atualização de status concluída.');
+  } catch (err) {
+    this.logger.error('Erro ao atualizar status dos pedidos:', err);
+  } finally {
+    this.isOrderStateUpdateRunning = false;
+  }
+}
+
+
   async syncOrders() {
     const orders = await this.kkService.getOrders();
     return this.processOrders(orders, 'Dia atual');
@@ -30,100 +80,170 @@ export class SyncService {
     return this.processOrders(orders, 'mês atual');
   }
 
-  private async processOrders(orders: any[], periodo: string) {
-  let duplicatedOrders: string[] = [];
-
-  if (!orders || orders.length === 0) {
-    this.logger.warn(`Nenhum pedido encontrado na KuantoKusta (${periodo}).`);
-    return { 
-      statusCode: HttpStatus.NO_CONTENT, 
-      message: `Nenhum pedido encontrado (${periodo}).`,
-      duplicatedOrders 
-    };
-  }
-
+private async processOrders(orders: any[], periodo: string) {
+  const duplicatedOrders: string[] = [];
+  const notFoundSKUs: string[] = [];
   let syncedCount = 0;
+
+  if (!orders?.length) {
+    this.logger.warn(`Nenhum pedido encontrado na KuantoKusta (${periodo}).`);
+    return this.buildResponse(HttpStatus.NO_CONTENT, periodo, 0, [], []);
+  }
 
   for (const order of orders) {
     if (!order.products?.length) continue;
 
-    const exists = await this.shopifyService.orderExists(order.orderId);
-    if (exists) {
+    if (await this.shopifyService.orderExists(order.orderId)) {
       duplicatedOrders.push(order.orderId);
-      this.logger.warn(`⏩ Pedido ${order.orderId} já existe no Shopify. Ignorando duplicação.`);
+      this.logger.warn(`⏩ Pedido ${order.orderId} já existe no Shopify.`);
       continue;
     }
 
-    const mappedOrder = this.mapToShopifyOrder(order);
-    await this.shopifyService.createOrder(mappedOrder);
-    syncedCount++;
+    const lineItems: { variant_id: number; quantity: number; price: string }[] = [];
+
+    for (const p of order.products) {
+      const sku = p.sellerProductId || p.id;
+
+      try {
+        const productData = await this.shopifyService.findProductBySKU(sku);
+
+        if (!productData) {
+          this.logger.warn(`❌ SKU ${sku} não encontrado na Shopify.`);
+          notFoundSKUs.push(sku);
+          continue;
+        }
+
+        const variantId = Number(
+          productData.variantId?.split('/').pop() // extrai o ID numérico do gid://
+        );
+
+        if (!Number.isFinite(variantId)) {
+          this.logger.warn(`⚠️ Produto encontrado, mas ID inválido (${sku}).`);
+          notFoundSKUs.push(sku);
+          continue;
+        }
+
+        lineItems.push({
+          variant_id: variantId,
+          quantity: Number(p.quantity) || 1,
+          price: (Number(p.price) || 0).toFixed(2),
+        });
+
+        this.logger.log(`🔎 SKU ${sku} → variant_id ${variantId}`);
+      } catch (err: any) {
+        this.logger.error(`Erro ao processar SKU ${sku}: ${err.message}`);
+        notFoundSKUs.push(sku);
+      }
+    }
+
+    if (!lineItems.length) {
+      this.logger.warn(`❌ Nenhum SKU válido no pedido ${order.orderId}. Ignorando.`);
+      continue;
+    }
+
+    try {
+      const mappedOrder = this.mapKuantokustaToShopify(order);
+      mappedOrder.line_items = lineItems;
+
+      await this.shopifyService.createOrder(mappedOrder);
+      syncedCount++;
+      this.logger.log(`✅ Pedido ${order.orderId} sincronizado (${lineItems.length} item(s)).`);
+    } catch (err: any) {
+      this.logger.error(`❌ Falha ao criar pedido ${order.orderId}: ${err.message}`);
+    }
   }
 
-  if (duplicatedOrders.length > 0) {
-    // Retorna 409 se houver **qualquer** pedido duplicado
-    return {
-      statusCode: HttpStatus.CONFLICT,
-      message: syncedCount === 0
-        ? `Todos os ${duplicatedOrders.length} pedidos já existiam no Shopify.`
-        : `${syncedCount} pedidos sincronizados e ${duplicatedOrders.length} já existiam no Shopify.`,
-      duplicatedOrders,
-    };
-  }
+  return this.buildResponse(HttpStatus.OK, periodo, syncedCount, duplicatedOrders, notFoundSKUs);
+}
 
-  // Nenhum duplicado, retorna 200
+
+// 🔹 Helper para simplificar o retorno
+private buildResponse(
+  statusCode: number,
+  periodo: string,
+  synced: number,
+  duplicated: string[],
+  notFound: string[],
+) {
+  const parts: string[] = [];
+  if (synced) parts.push(`${synced} pedidos sincronizados`);
+  if (duplicated.length) parts.push(`${duplicated.length} já existiam`);
+  if (notFound.length) parts.push(`${notFound.length} SKUs não encontrados`);
+
   return {
-    statusCode: HttpStatus.OK,
-    message: `${syncedCount} pedidos (${periodo}) sincronizados com sucesso.`,
-    duplicatedOrders, // array vazio
+    statusCode,
+    message: parts.length
+      ? `${parts.join(', ')}. (${periodo})`
+      : `Nenhum pedido sincronizado (${periodo}).`,
+    duplicatedOrders: duplicated,
+    notFoundSKUs: notFound,
   };
 }
+
 
 
   /**
    * 🧩 Mapeia pedido da KuantoKusta para formato do Shopify
    */
-  private mapToShopifyOrder(order: any) {
-    const nameParts = (order.deliveryAddress?.customerName || '').split(' ');
-    const firstName = nameParts[0] || '';
-    const lastName = nameParts.slice(1).join(' ') || '';
+ private mapKuantokustaToShopify(order: KuantoKustaOrder): ShopifyOrder {
+  const nameParts = (order.deliveryAddress?.customerName || '').trim().split(' ');
+  const firstName = nameParts.shift() || '';
+  const lastName = nameParts.join(' ') || '';
 
-    this.logger.debug(
-      `Mapeando pedido: ${order.orderId}, Cliente: ${order.deliveryAddress?.customerName}`,
-    );
+  // Valida o e-mail
+  const rawEmail = (order as any).deliveryAddress?.email || '';
+  const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+  const safeEmail = isValidEmail ? rawEmail : `kk_${order.orderId}@kuantokusta.fake`;
 
-    return {
-      note: `Pedido importado da KuantoKusta - ID: ${order.orderId}`,
-      line_items: (order.products || []).map((p: any) => ({
-        title: p.name,
-        quantity: p.quantity,
-        price: p.price.toFixed(2),
-        sku: p.sellerProductId || p.id,
-      })),
-      customer: {
-        first_name: firstName,
-        last_name: lastName,
-        email: order.deliveryAddress?.email || '',
-        address1: order.deliveryAddress?.address1 || '',
-        address2: order.deliveryAddress?.address2 || '',
-        city: order.deliveryAddress?.city || '',
-        zip: order.deliveryAddress?.zipCode || '',
-        country: order.deliveryAddress?.country || '',
-      },
-      financial_status: 'pending',
-      currency: 'EUR',
-      total_price: order.totalPrice?.toFixed(2) || '0.00',
-      shipping_lines: order.shipping
-        ? [
-            {
-              title: order.shipping.type,
-              price: order.shipping.value.toFixed(2),
-              code: order.shipping.type,
-            },
-          ]
-        : [],
-      tags: ['KuantoKusta', `KK-${order.orderId}`],
-    };
-  }
+  this.logger.debug(
+    `Mapeando pedido: ${order.orderId}, Cliente: ${order.deliveryAddress?.customerName}`,
+  );
+
+  return {
+    note: `Pedido importado da KuantoKusta - ID: ${order.orderId}`,
+    customer: {
+      first_name: firstName,
+      last_name: lastName,
+      email: safeEmail,
+    },
+    shipping_address: {
+      address1: order.deliveryAddress?.address1 || '',
+      address2: order.deliveryAddress?.address2 || '',
+      city: order.deliveryAddress?.city || '',
+      zip: order.deliveryAddress?.zipCode || '',
+      country: order.deliveryAddress?.country || '',
+      // usamos type casting aqui pra Shopify aceitar
+      ...(order.deliveryAddress?.customerName && { name: order.deliveryAddress.customerName }),
+      ...(order.deliveryAddress?.contact && { phone: order.deliveryAddress.contact }),
+    } as any,
+    billing_address: {
+      address1: order.billingAddress?.address1 || '',
+      address2: order.billingAddress?.address2 || '',
+      city: order.billingAddress?.city || '',
+      zip: order.billingAddress?.zipCode || '',
+      country: order.billingAddress?.country || '',
+      ...(order.billingAddress?.customerName && { name: order.billingAddress.customerName }),
+      ...(order.billingAddress?.contact && { phone: order.billingAddress.contact }),
+    } as any,
+    line_items: [],
+    financial_status: 'pending',
+    currency: 'EUR',
+    total_price: order.totalPrice?.toFixed(2) || '0.00',
+    shipping_lines: order.shipping
+      ? [
+          {
+            title: order.shipping.type,
+            price: order.shipping.value.toFixed(2),
+            code: order.shipping.type,
+          },
+        ]
+      : [],
+    tags: ['KuantoKusta', `KK-${order.orderId}`],
+  };
+}
+
+
+
 
    async syncShipmentFromShopify(orderId: number) {
     try {
