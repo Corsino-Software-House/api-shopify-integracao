@@ -4,6 +4,7 @@ import { KuantokustaService } from '../kuantokusta/kuantokusta.service';
 import { ShopifyService } from '../shopify/shopify.service';
 import {ShopifyOrder} from '../interface/ShopifyOrder-interface';
 import { KuantoKustaOrder } from '../interface/KuantoKusta-interface';
+import { MoloniService } from '../moloni/moloni.service';
 import axios from 'axios';
 
 @Injectable()
@@ -15,6 +16,7 @@ export class SyncService {
   constructor(
     private readonly kkService: KuantokustaService,
     private readonly shopifyService: ShopifyService,
+    private readonly moloniService: MoloniService,
   ) {}
 
   /**
@@ -40,7 +42,7 @@ async handleCronSync() {
   }
 }
 
-@Cron(CronExpression.EVERY_MINUTE)
+@Cron(CronExpression.EVERY_5_MINUTES)
 async handleOrderStateUpdate() {
   if (this.isOrderStateUpdateRunning) {
     this.logger.warn('⚠️ Atualização de status já em execução. Ignorando.');
@@ -52,10 +54,48 @@ async handleOrderStateUpdate() {
 
   try {
     const orders = await this.kkService.getOrders();
+
     for (const order of orders) {
       if (!order.orderId || !order.orderState) continue;
-      await this.shopifyService.updateOrderStatusFromKuantoKusta(order.orderId, order.orderState);
+
+      // 1️⃣ Atualizar o status no Shopify (já existe)
+      await this.shopifyService.updateOrderStatusFromKuantoKusta(
+        order.orderId,
+        order.orderState,
+      );
+
+      // 2️⃣ Criar fatura NO MOLONI quando aprovado
+      // 2️⃣ Criar fatura NO MOLONI quando aprovado
+if (order.orderState === 'Approved') {
+  try {
+
+    // 🔍 VERIFICAÇÃO: já existe fatura no Moloni?
+    const existingInvoice = await this.moloniService.findInvoiceByOrder(order.orderId);
+
+    if (existingInvoice) {
+      this.logger.warn(
+        `⚠️ Fatura Moloni já existente para o pedido ${order.orderId}. Não será criada outra.`
+      );
+      continue; // impede duplicação
     }
+
+    // 🔧 Se não existir, cria a fatura normalmente
+    this.logger.log(`🧾 Criando fatura Moloni para pedido ${order.orderId}...`);
+    await this.moloniService.createInvoice(order);
+
+    this.logger.log(
+      `✅ Fatura Moloni criada com sucesso para pedido ${order.orderId}`
+    );
+
+  } catch (err: any) {
+    this.logger.error(
+      `❌ Falha ao criar fatura Moloni do pedido ${order.orderId}: ${err.message}`,
+    );
+  }
+}
+
+    }
+
     this.logger.log('✅ Atualização de status concluída.');
   } catch (err) {
     this.logger.error('Erro ao atualizar status dos pedidos:', err);
@@ -63,6 +103,7 @@ async handleOrderStateUpdate() {
     this.isOrderStateUpdateRunning = false;
   }
 }
+
 
 
   async syncOrders() {

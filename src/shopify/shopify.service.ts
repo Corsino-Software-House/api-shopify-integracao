@@ -129,6 +129,18 @@ async findProductBySKU(sku: string) {
 }
 
 private async markOrderAsPaid(orderGid: string) {
+  const query = `
+    query GetOrderFinancialStatus($id: ID!) {
+      node(id: $id) {
+        ... on Order {
+          id
+          name
+          displayFinancialStatus
+        }
+      }
+    }
+  `;
+
   const mutation = `
     mutation MarkOrderPaid($input: OrderMarkAsPaidInput!) {
       orderMarkAsPaid(input: $input) {
@@ -146,44 +158,73 @@ private async markOrderAsPaid(orderGid: string) {
   `;
 
   try {
-    const response = await axios.post(
+    // 1. Busca o status atual do pedido
+    const statusResponse = await axios.post(
+      this.graphqlUrl,
+      {
+        query,
+        variables: { id: orderGid },
+      },
+      { headers: this.headers }
+    );
+
+    const orderNode = statusResponse.data.data?.node;
+
+    if (!orderNode) {
+      throw new Error('Pedido não encontrado ou ID inválido no Shopify.');
+    }
+
+    const currentStatus = orderNode.displayFinancialStatus;
+
+    this.logger.debug(
+      `Pedido ${orderNode.name} (${orderGid}) está com status financeiro: ${currentStatus}`
+    );
+
+    // 2. Verifica se já está pago (total ou parcialmente – ajuste conforme sua regra de negócio)
+    if (currentStatus === 'PAID' || currentStatus === 'PARTIALLY_PAID') {
+      this.logger.log(
+        `Pedido ${orderNode.name} já está marcado como ${currentStatus}. Nada a fazer.`
+      );
+      return; // Sai sem erro
+    }
+
+    // 3. Se ainda não está pago, executa a mutation
+    const mutationResponse = await axios.post(
       this.graphqlUrl,
       {
         query: mutation,
         variables: {
-          input: {
-            id: orderGid,
-          },
+          input: { id: orderGid },
         },
       },
       { headers: this.headers }
     );
 
-    this.logger.debug(`📤 Resposta Shopify RAW: ${JSON.stringify(response.data, null, 2)}`);
+    this.logger.debug(
+      `Resposta Shopify MarkAsPaid RAW: ${JSON.stringify(mutationResponse.data, null, 2)}`
+    );
 
-    const result = response.data.data?.orderMarkAsPaid;
+    const result = mutationResponse.data.data?.orderMarkAsPaid;
     const errors = result?.userErrors;
     const order = result?.order;
 
     if (errors?.length) {
-      throw new Error(`Erro ao marcar como pago: ${errors.map(e => e.message).join(', ')}`);
+      throw new Error(`Erro ao marcar como pago: ${errors.map((e: any) => e.message).join(', ')}`);
     }
 
     if (!order) {
-      throw new Error('Shopify não retornou o objeto "order" — verifique o ID ou escopos da API.');
+      throw new Error('Shopify não retornou o objeto "order" após marcar como pago.');
     }
 
-    this.logger.log(`💰 Pedido ${order.id} (${order.name}) marcado como pago com sucesso (GraphQL).`);
+    this.logger.log(
+      `Pedido ${order.name} (${order.id}) marcado como pago com sucesso. Status atual: ${order.displayFinancialStatus}`
+    );
   } catch (error: any) {
     const details = error.response?.data || error.message;
-    this.logger.error(`❌ Erro ao marcar pedido como pago: ${JSON.stringify(details)}`);
+    this.logger.error(`Erro ao marcar pedido como pago (${orderGid}): ${JSON.stringify(details)}`);
+    throw error; // opcional: re-throw se quiser que o erro suba
   }
 }
-
-
-
-
-
 
 
 private async markOrderAsFulfilled(orderGid: string) {
@@ -309,12 +350,11 @@ async updateOrderStatusFromKuantoKusta(orderId: string, orderState: string) {
         break;
 
       case 'canceled':
-      case 'cancelled':
         await this.cancelShopifyOrder(shopifyOrderId);
         break;
 
       case 'shipped':
-      case 'delivered':
+      case 'In Transit':
         if (!fulfillmentOrderId) {
           this.logger.warn(`⚠️ Pedido KK-${orderId} não possui fulfillmentOrderId disponível.`);
           return;
