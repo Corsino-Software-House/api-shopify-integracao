@@ -66,33 +66,33 @@ async handleOrderStateUpdate() {
 
       // 2️⃣ Criar fatura NO MOLONI quando aprovado
       // 2️⃣ Criar fatura NO MOLONI quando aprovado
-if (order.orderState === 'Approved') {
-  try {
+// if (order.orderState === 'Approved') {
+//   try {
 
-    // 🔍 VERIFICAÇÃO: já existe fatura no Moloni?
-    const existingInvoice = await this.moloniService.findInvoiceByOrder(order.orderId);
+//     // 🔍 VERIFICAÇÃO: já existe fatura no Moloni?
+//     const existingInvoice = await this.moloniService.findInvoiceByOrder(order.orderId);
 
-    if (existingInvoice) {
-      this.logger.warn(
-        `⚠️ Fatura Moloni já existente para o pedido ${order.orderId}. Não será criada outra.`
-      );
-      continue; // impede duplicação
-    }
+//     if (existingInvoice) {
+//       this.logger.warn(
+//         `⚠️ Fatura Moloni já existente para o pedido ${order.orderId}. Não será criada outra.`
+//       );
+//       continue; // impede duplicação
+//     }
 
-    // 🔧 Se não existir, cria a fatura normalmente
-    this.logger.log(`🧾 Criando fatura Moloni para pedido ${order.orderId}...`);
-    await this.moloniService.createInvoice(order);
+//     // 🔧 Se não existir, cria a fatura normalmente
+//     this.logger.log(`🧾 Criando fatura Moloni para pedido ${order.orderId}...`);
+//     await this.moloniService.createInvoice(order);
 
-    this.logger.log(
-      `✅ Fatura Moloni criada com sucesso para pedido ${order.orderId}`
-    );
+//     this.logger.log(
+//       `✅ Fatura Moloni criada com sucesso para pedido ${order.orderId}`
+//     );
 
-  } catch (err: any) {
-    this.logger.error(
-      `❌ Falha ao criar fatura Moloni do pedido ${order.orderId}: ${err.message}`,
-    );
-  }
-}
+//   } catch (err: any) {
+//     this.logger.error(
+//       `❌ Falha ao criar fatura Moloni do pedido ${order.orderId}: ${err.message}`,
+//     );
+//   }
+// }
 
     }
 
@@ -107,7 +107,7 @@ if (order.orderState === 'Approved') {
 
 
   async syncOrders() {
-    const orders = await this.kkService.getOrders();
+    const orders = await this.kkService.getOrders('WaitingApproval');
     return this.processOrders(orders, 'Dia atual');
   }
 
