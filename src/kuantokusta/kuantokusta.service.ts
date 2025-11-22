@@ -41,13 +41,26 @@ export class KuantokustaService {
   /**
    * Método genérico para buscar pedidos entre duas datas
    */
-  private async fetchOrdersBetween(start: Date, end: Date, label: string) {
+  private async fetchOrdersBetween(
+    start: Date,
+    end: Date,
+    label: string,
+    orderState?: string,
+  ) {
     try {
       const createdAt_gte = start.toISOString();
       const createdAt_lte = end.toISOString();
-      const url = `${this.baseUrl}/kms/orders?createdAt_gte=${createdAt_gte}&createdAt_lte=${createdAt_lte}`;
+      let url = `${this.baseUrl}/kms/orders?createdAt_gte=${createdAt_gte}&createdAt_lte=${createdAt_lte}`;
 
-      this.logger.log(`Buscando pedidos (${label}) entre ${createdAt_gte} e ${createdAt_lte}`);
+      if (orderState) {
+        // adiciona o parâmetro orderState se for passado
+        url += `&orderState=${encodeURIComponent(orderState)}`;
+      }
+
+      this.logger.log(
+        `Buscando pedidos (${label}) entre ${createdAt_gte} e ${createdAt_lte}` +
+          (orderState ? ` com estado ${orderState}` : ''),
+      );
 
       const { data } = await axios.get(url, { headers: this.headers });
 
@@ -60,7 +73,8 @@ export class KuantokustaService {
 
       throw new HttpException(
         {
-          statusCode: error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+          statusCode:
+            error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
           message: `Erro ao buscar pedidos (${label})`,
           details,
         },
@@ -73,9 +87,9 @@ export class KuantokustaService {
    * Busca pedidos dos últimos 7 dias
    */
   /**
- * Busca pedidos do dia atual
- */
-async getOrders() : Promise<KuantoKustaOrder[]> {
+   * Busca pedidos do dia atual
+   */
+ async getOrders(orderState?: string): Promise<KuantoKustaOrder[]> {
   try {
     const today = new Date();
     const startOfDay = new Date(today);
@@ -84,12 +98,11 @@ async getOrders() : Promise<KuantoKustaOrder[]> {
     const endOfDay = new Date(today);
     endOfDay.setHours(23, 59, 59, 999);
 
-    return await this.fetchOrdersBetween(startOfDay, endOfDay, 'dia atual');
+    return await this.fetchOrdersBetween(startOfDay, endOfDay, 'dia atual', orderState);
   } catch (error) {
     throw error;
   }
 }
-
 
   /**
    * Busca pedidos da semana atual (segunda até hoje)
@@ -103,7 +116,11 @@ async getOrders() : Promise<KuantoKustaOrder[]> {
       firstDayOfWeek.setDate(today.getDate() - diff);
       firstDayOfWeek.setHours(0, 0, 0, 0);
 
-      return await this.fetchOrdersBetween(firstDayOfWeek, today, 'semana atual');
+      return await this.fetchOrdersBetween(
+        firstDayOfWeek,
+        today,
+        'semana atual',
+      );
     } catch (error) {
       throw error;
     }
@@ -115,7 +132,11 @@ async getOrders() : Promise<KuantoKustaOrder[]> {
   async getMonthlyOrders() {
     try {
       const today = new Date();
-      const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      const firstDayOfMonth = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        1,
+      );
       firstDayOfMonth.setHours(0, 0, 0, 0);
 
       return await this.fetchOrdersBetween(firstDayOfMonth, today, 'mês atual');
@@ -123,7 +144,7 @@ async getOrders() : Promise<KuantoKustaOrder[]> {
       throw error;
     }
   }
- 
+
   /**
    * Atualiza expedição de um pedido
    */
@@ -143,7 +164,8 @@ async getOrders() : Promise<KuantoKustaOrder[]> {
 
       throw new HttpException(
         {
-          statusCode: error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+          statusCode:
+            error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
           message: 'Erro ao atualizar expedição',
           details,
         },
