@@ -344,8 +344,11 @@ async updateOrderStatusFromKuantoKusta(orderId: string, orderState: string) {
       case 'approved':
         await this.markOrderAsPaid(shopifyOrderId);
         break;
-
       case 'waiting approval':
+        await this.markOrderAsPaid(shopifyOrderId);
+        break;
+
+      case 'waiting payment':
         this.logger.log(`🕓 Pedido KK-${orderId} aguardando aprovação.`);
         break;
 
