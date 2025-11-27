@@ -42,7 +42,7 @@ async handleCronSync() {
   }
 }
 
-@Cron(CronExpression.EVERY_5_MINUTES)
+@Cron("*/2 * * * *")
 async handleOrderStateUpdate() {
   if (this.isOrderStateUpdateRunning) {
     this.logger.warn('⚠️ Atualização de status já em execução. Ignorando.');
@@ -50,55 +50,44 @@ async handleOrderStateUpdate() {
   }
 
   this.isOrderStateUpdateRunning = true;
-  this.logger.log('🔁 Atualizando status dos pedidos existentes...');
+
+  this.logger.log('🔁 Atualizando status dos pedidos da semana inteira...');
 
   try {
-    const orders = await this.kkService.getOrders();
+    // 📅 Definir intervalo da semana (segunda → domingo)
+    const now = new Date();
+
+    const startOfWeek = new Date(now);
+    startOfWeek.setHours(0, 0, 0, 0);
+    startOfWeek.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+
+    // 🔄 Buscar pedidos somente para atualização (sem alterar getOrders())
+    const orders = await this.kkService.fetchOrdersBetween(
+      startOfWeek,
+      endOfWeek,
+      'cron semanal',
+      undefined, // pode passar orderState se quiser filtrar
+    );
+
+    this.logger.log(`📦 ${orders.length} pedidos encontrados esta semana.`);
 
     for (const order of orders) {
       if (!order.orderId || !order.orderState) continue;
 
-      // 1️⃣ Atualizar o status no Shopify (já existe)
+      // 🔄 Atualizar status no Shopify
       await this.shopifyService.updateOrderStatusFromKuantoKusta(
         order.orderId,
         order.orderState,
       );
-
-      // 2️⃣ Criar fatura NO MOLONI quando aprovado
-      // 2️⃣ Criar fatura NO MOLONI quando aprovado
-// if (order.orderState === 'Approved') {
-//   try {
-
-//     // 🔍 VERIFICAÇÃO: já existe fatura no Moloni?
-//     const existingInvoice = await this.moloniService.findInvoiceByOrder(order.orderId);
-
-//     if (existingInvoice) {
-//       this.logger.warn(
-//         `⚠️ Fatura Moloni já existente para o pedido ${order.orderId}. Não será criada outra.`
-//       );
-//       continue; // impede duplicação
-//     }
-
-//     // 🔧 Se não existir, cria a fatura normalmente
-//     this.logger.log(`🧾 Criando fatura Moloni para pedido ${order.orderId}...`);
-//     await this.moloniService.createInvoice(order);
-
-//     this.logger.log(
-//       `✅ Fatura Moloni criada com sucesso para pedido ${order.orderId}`
-//     );
-
-//   } catch (err: any) {
-//     this.logger.error(
-//       `❌ Falha ao criar fatura Moloni do pedido ${order.orderId}: ${err.message}`,
-//     );
-//   }
-// }
-
     }
 
-    this.logger.log('✅ Atualização de status concluída.');
+    this.logger.log('✅ Atualização semanal concluída.');
   } catch (err) {
-    this.logger.error('Erro ao atualizar status dos pedidos:', err);
+    this.logger.error('Erro na atualização semanal:', err);
   } finally {
     this.isOrderStateUpdateRunning = false;
   }
