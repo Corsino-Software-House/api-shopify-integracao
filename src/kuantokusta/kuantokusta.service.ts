@@ -41,7 +41,7 @@ export class KuantokustaService {
   /**
    * Método genérico para buscar pedidos entre duas datas
    */
-  private async fetchOrdersBetween(
+  async fetchOrdersBetween(
     start: Date,
     end: Date,
     label: string,
